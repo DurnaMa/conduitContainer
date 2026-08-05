@@ -4,8 +4,8 @@ services:
   frontend:
     build:
       context: ./conduit-frontend
-      dockerfile: dockerfile
-    args:
+      args: 
+        - API_URL=${API_URL}
       
     ports: 
       - "8282:80"
@@ -13,7 +13,6 @@ services:
   backend:
     build:
       context: ./conduit-backend
-      dockerfile: dockerfile
     ports: 
       - "8283:80"
 
