@@ -1,6 +1,0 @@
-[submodule "conduit-frontend"]
-	path = conduit-frontend
-	url = https://github.com/Developer-Akademie-DevSecOpsKurs/conduit-frontend
-[submodule "conduit-backend"]
-	path = conduit-backend
-	url = https://github.com/Developer-Akademie-DevSecOpsKurs/conduit-backend

@@ -1,0 +1,36 @@
+name: conduit
+
+services:
+  frontend:
+    build:
+      context: ./conduit-frontend
+      dockerfile: dockerfile
+    args:
+      
+    ports: 
+      - "8282:80"
+
+  backend:
+    build:
+      context: ./conduit-backend
+      dockerfile: dockerfile
+    ports: 
+      - "8283:80"
+
+  db:
+    image: postgres:18.4-alpine3.24
+    restart: unless-stopped
+    shm_size: 128mb
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db:/var/lib/postgresql
+
+  adminer:
+    image: adminer
+    restart: unless-stopped
+    ports:
+      - 8285:8080
+
+volumes:
+  db:
