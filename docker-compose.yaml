@@ -6,21 +6,31 @@ services:
       context: ./conduit-frontend
       args: 
         - API_URL=${API_URL}
-      
+    restart: unless-stopped
     ports: 
       - "8282:80"
 
   backend:
     build:
       context: ./conduit-backend
+    restart: unless-stopped
     ports: 
       - "8283:80"
+    environment:
+      SECRET_KEY: ${SECRET_KEY}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      - db
 
   db:
     image: postgres:18.4-alpine3.24
     restart: unless-stopped
     shm_size: 128mb
     environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - db:/var/lib/postgresql
