@@ -6,11 +6,11 @@ The application source (`conduit-frontend`, `conduit-backend`) is vendored unmod
 
 ## Table of Contents
 
-- [Files](#files)
-- [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Command conventions](#command-conventions)
 - [Quickstart](#quickstart)
+- [Files](#files)
+- [Architecture](#architecture)
 - [Access](#access)
 - [Usage](#usage)
   - [Configuration](#configuration)
@@ -21,47 +21,20 @@ The application source (`conduit-frontend`, `conduit-backend`) is vendored unmod
   - [Stop and Cleanup](#stop-and-cleanup)
 - [Troubleshooting](#troubleshooting)
 
-## Files
-
-| File | Purpose |
-|---|---|
-| `README.md` | This documentation |
-| `docker-compose.yaml` | Defines the `frontend`, `backend`, `db` and `adminer` services, their ports, the `db` volume and all environment variables |
-| `.env.example` | Template listing every variable the compose file references, without secret values |
-| `.gitignore` | Keeps secrets (`.env`), build output and caches out of Git |
-| `conduit-frontend/Dockerfile` | Multi-stage build: Angular build with Node, served by Nginx |
-| `conduit-frontend/.dockerignore` | Excludes `node_modules` and build output from the frontend build context |
-| `conduit-backend/Dockerfile` | Multi-stage build: pip install stage, then a slim runtime image running Gunicorn |
-| `conduit-backend/.dockerignore` | Excludes caches and local files from the backend build context |
-| `conduit-backend/entrypoint.sh` | Runs `migrate` on container start, then execs Gunicorn |
-
-## Architecture
-
-| Service | Image / Build | Host port | Container port |
-|---|---|---|---|
-| `frontend` | built from `./conduit-frontend` (Node build, `nginx:1.31.3-alpine` runtime) | `8282` | `80` |
-| `backend` | built from `./conduit-backend` (`python:3.5.10-slim-buster`, Gunicorn) | `8283` | `80` |
-| `db` | `postgres:18.4-alpine3.24` | *(none)* | `5432` |
-| `adminer` | `adminer` | `8285` | `8080` |
-
-The database deliberately has no host port. Only the backend reaches it, over the internal Docker network under the hostname `db`. All services use `restart: unless-stopped`.
-
-> [!NOTE]
-> Since PostgreSQL 18, `PGDATA` lives in `/var/lib/postgresql` instead of `/var/lib/postgresql/data`. The `db` volume is mounted accordingly.
-> Using the older path with an 18.x image would silently leave the data unpersisted.
-
 ## Prerequisites
 
 - Docker installed — check with: `docker -v`
 - Docker Compose installed — check with: `docker compose version`
-- The host ports `8282`, `8283` and `8285` must be free.
+- Host ports — default to `8282`, `8283` and `8285`; change them in `.env` if they are taken.
 - A `.env` file — created in the Quickstart below.
 
-The stack runs on any Docker host: Windows or macOS with Docker Desktop, or Linux with Docker Engine. It does not require a remote server — running it locally works as long as the host and origin variables match the address you use (see [Configuration](#configuration)). If you run it on a remote machine, replace `localhost` with that machine's IP address everywhere below and make sure the ports are reachable through its firewall or security group.
+The stack runs on any Docker host: Windows or macOS with Docker Desktop, or Linux with Docker Engine.
+It does not require a remote server — running it locally works as long as the host and origin variables match the address you use (see [Configuration](#configuration)).
+If you run it on a remote machine, replace `localhost` with that machine's IP address everywhere below and make sure the ports are reachable through its firewall or security group.
 
 ## Command conventions
 
-All commands are written to run as shown in **PowerShell on Windows**, **Terminal on macOS** and **bash on Linux**. Where a command has no cross-platform form, both variants are given side by side.
+All commands are written to run as shown in **Terminal on macOS** and **bash on Linux**. Where a command has no cross-platform form, both variants are given side by side.
 
 > [!NOTE]
 > On Linux, Docker commands need root unless your user is in the `docker` group.
@@ -88,36 +61,10 @@ All commands are written to run as shown in **PowerShell on Windows**, **Termina
    cp .env.example .env
    ```
 
-   PowerShell:
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
 4. Edit `.env` and fill in the empty values. Generate `SECRET_KEY` with:
-
-   macOS / Linux:
 
    ```bash
    openssl rand -base64 48
-   ```
-
-   PowerShell:
-
-   ```powershell
-   $bytes = New-Object byte[] 48
-   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-   [Convert]::ToBase64String($bytes)
-   ```
-
-> [!IMPORTANT]
-> Run these three lines one after another in the *same* PowerShell window — they share the `$bytes` variable.
-> The first two print nothing; that is expected. Only the third line outputs the key. If you open a new window in between, `$bytes` is gone and the result is wrong.
-
-   As a single line, if you would rather not deal with that:
-
-   ```powershell
-   $b = New-Object byte[] 48; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
    ```
 
 > [!IMPORTANT]
@@ -134,16 +81,48 @@ All commands are written to run as shown in **PowerShell on Windows**, **Termina
 
 7. Create an admin user — see [Creating an admin user](#creating-an-admin-user).
 
+## Files
+
+| File | Purpose |
+|---|---|
+| `README.md` | This documentation |
+| `docker-compose.yaml` | Defines the `frontend`, `backend`, `db` and `adminer` services, their ports, the `db` volume and all environment variables |
+| `.env.example` | Template listing every variable the compose file references, without secret values |
+| `.gitignore` | Keeps secrets (`.env`), build output and caches out of Git |
+| `conduit-frontend/Dockerfile` | Multi-stage build: Angular build with Node, served by Nginx |
+| `conduit-frontend/.dockerignore` | Excludes `node_modules` and build output from the frontend build context |
+| `conduit-backend/Dockerfile` | Multi-stage build: pip install stage, then a slim runtime image running Gunicorn |
+| `conduit-backend/.dockerignore` | Excludes caches and local files from the backend build context |
+| `conduit-backend/entrypoint.sh` | Runs `migrate` on container start, then execs Gunicorn |
+
+## Architecture
+
+| Service | Image / Build | Host port | Container port |
+|---|---|---|---|
+| `frontend` | built from `./conduit-frontend` (Node build, `nginx:1.31.3-alpine` runtime) | `8282` | `80` |
+| `backend` | built from `./conduit-backend` (`python:3.5.10-slim-buster`, Gunicorn) | `8283` | `80` |
+| `db` | `postgres:18.4-alpine3.24` | *(none)* | `5432` |
+| `adminer` | `adminer` | Host port (default) `8285` | Host port (default) `8080` |
+
+The database deliberately has no host port. Only the backend reaches it, over the internal Docker network under the hostname `db`. All services use `restart: unless-stopped`.
+
+> [!NOTE]
+> Since PostgreSQL 18, `PGDATA` lives in `/var/lib/postgresql` instead of `/var/lib/postgresql/data`. The `db` volume is mounted accordingly.
+> Using the older path with an 18.x image would silently leave the data unpersisted.
+
+
 ## Access
 
-| What | URL |
-|---|---|
-| Frontend | <http://localhost:8282> |
-| REST API | <http://localhost:8283/api/> |
-| Django admin | <http://localhost:8283/admin/> |
-| Adminer | <http://localhost:8285> |
+Ports shown are the defaults from `.env.example`. If you changed `PORTS_FRONTEND`
+or `PORTS_BACKEND`, use those instead.
 
 Replace `localhost` with the host's IP address if you are not running the stack on your own machine.
+
+Adminer only listens on the VM's loopback interface. Open a tunnel first:
+
+```bash
+ssh -L 8285:127.0.0.1:8285 <user>@<VM-IP>
+```
 
 To log into Adminer, choose system **PostgreSQL**, server `db`, and use `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` from your `.env`.
 
@@ -158,17 +137,20 @@ All configuration goes through `.env`. No values are hard-coded in the compose f
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `API_URL` | Base URL of the API, compiled into the Angular bundle at build time | `http://localhost:8283/api` |
+| `HOST` | Address the stack is reached under. Used to build the API URL, `ALLOWED_HOSTS` and the CORS origin | `localhost` |
+| `PORTS_FRONTEND` | Host port the frontend is published on | `8282` |
+| `PORTS_BACKEND` | Host port the backend is published on. Also becomes the port in the API URL | `8283` |
+| `PORTS_ADMINER` | Host port Adminer is published on, bound to `127.0.0.1` only | `8285` |
 | `SECRET_KEY` | Django secret used for signing sessions and tokens | *(blank — generate your own)* |
 | `DEBUG` | Django debug mode. Leave off for anything but local debugging | `False` |
-| `ALLOWED_HOSTS` | Hosts Django accepts requests for. Django compares the hostname only, without the port | `localhost` |
-| `CORS_ORIGIN_WHITELIST` | Origins allowed to call the API. This is an origin, so it includes scheme and port | `http://localhost:8282` |
 | `POSTGRES_DB` | Database name, used by both `db` and `backend` | `conduit` |
 | `POSTGRES_USER` | Database user | `conduit` |
 | `POSTGRES_PASSWORD` | Password for that user | *(blank — set your own)* |
 | `DJANGO_SUPERUSER_PASSWORD` | Password used when the admin user is created | *(blank — set your own)* |
 
-Changing the address the stack is reached under means changing three variables together: `API_URL`, `ALLOWED_HOSTS` and `CORS_ORIGIN_WHITELIST`. If they disagree, the frontend loads but stays empty.
+`API_URL`, `ALLOWED_HOSTS` and `CORS_ORIGIN_WHITELIST` are not set by hand.
+The compose file builds them from `HOST` and the port variables, so a single
+change to `HOST` or a port stays consistent across all three.
 
 > [!IMPORTANT]
 > A variable that is set but empty is not the same as a missing one. `os.environ.get('X', 'default')` returns an empty string for `X=`, not the default. An empty `SECRET_KEY` makes Django fail when it signs a session.
@@ -203,7 +185,9 @@ docker compose exec backend python manage.py createsuperuser
 ```
 
 > [!IMPORTANT]
-> This application's `create_superuser` ignores the password you type. It uses `DJANGO_SUPERUSER_PASSWORD` if that variable is at least four characters long, and falls back to a hard-coded default otherwise. Set the variable in `.env` and recreate the backend container *before* running the command — it only applies at the moment the user is created and does not change an existing one.
+> This application's `create_superuser` ignores the password you type.
+> It uses `DJANGO_SUPERUSER_PASSWORD` if that variable is at least four characters long, and falls back to a hard-coded default otherwise.
+> Set the variable in `.env` and recreate the backend container *before* running the command — it only applies at the moment the user is created and does not change an existing one.
 
 > [!IMPORTANT]
 > The user model uses the email address as its login field. Log into `/admin/` with the email, not the username.
@@ -233,16 +217,8 @@ docker compose exec backend python manage.py createsuperuser
 
 4. Call the API directly:
 
-   macOS / Linux:
-
    ```bash
    curl -i http://localhost:8283/api/tags
-   ```
-
-   PowerShell (`curl` is an alias for `Invoke-WebRequest` there and does not accept `-i`):
-
-   ```powershell
-   Invoke-WebRequest http://localhost:8283/api/tags | Select-Object StatusCode, Headers
    ```
 
    Expect status `200` and a `Server: gunicorn` response header. The header confirms a WSGI server is serving the app rather than a development server.
@@ -263,16 +239,8 @@ docker compose logs -f backend
 
 Write the logs of one container to a file:
 
-macOS / Linux:
-
 ```bash
 docker logs conduit-backend-1 > container-logs.txt
-```
-
-PowerShell (`>` would write UTF-16 there):
-
-```powershell
-docker logs conduit-backend-1 | Out-File -Encoding utf8 container-logs.txt
 ```
 
 ### Stop and Cleanup
