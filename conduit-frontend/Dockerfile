@@ -10,6 +10,6 @@ RUN echo "export const environment = { apiUrl: '${API_URL}' };" > src/environmen
 RUN npm run build
 
 FROM nginx:1.31.3-alpine
-COPY --from=bilder /app/dist /usr/share/nginx/html
+COPY --from=bilder /app/dist/angular-conduit /usr/share/nginx/html
 
 EXPOSE 80
