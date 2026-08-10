@@ -47,7 +47,8 @@ The application source (`conduit-frontend`, `conduit-backend`) is vendored unmod
 The database deliberately has no host port. Only the backend reaches it, over the internal Docker network under the hostname `db`. All services use `restart: unless-stopped`.
 
 > [!NOTE]
-> Since PostgreSQL 18, `PGDATA` lives in `/var/lib/postgresql` instead of `/var/lib/postgresql/data`. The `db` volume is mounted accordingly. Using the older path with an 18.x image would silently leave the data unpersisted.
+> Since PostgreSQL 18, `PGDATA` lives in `/var/lib/postgresql` instead of `/var/lib/postgresql/data`. The `db` volume is mounted accordingly.
+> Using the older path with an 18.x image would silently leave the data unpersisted.
 
 ## Prerequisites
 
@@ -63,7 +64,9 @@ The stack runs on any Docker host: Windows or macOS with Docker Desktop, or Linu
 All commands are written to run as shown in **PowerShell on Windows**, **Terminal on macOS** and **bash on Linux**. Where a command has no cross-platform form, both variants are given side by side.
 
 > [!NOTE]
-> On Linux, Docker commands need root unless your user is in the `docker` group. Either add yourself to it once with `sudo usermod -aG docker $USER` (log out and back in afterwards), or prefix every `docker` command below with `sudo`. On Windows and macOS with Docker Desktop, no prefix is needed.
+> On Linux, Docker commands need root unless your user is in the `docker` group.
+> Either add yourself to it once with `sudo usermod -aG docker $USER` (log out and back in afterwards), or prefix every `docker` command below with `sudo`.
+> On Windows and macOS with Docker Desktop, no prefix is needed.
 
 ## Quickstart
 
@@ -107,8 +110,9 @@ All commands are written to run as shown in **PowerShell on Windows**, **Termina
    [Convert]::ToBase64String($bytes)
    ```
 
-   > [!IMPORTANT]
-   > Run these three lines one after another in the *same* PowerShell window — they share the `$bytes` variable. The first two print nothing; that is expected. Only the third line outputs the key. If you open a new window in between, `$bytes` is gone and the result is wrong.
+> [!IMPORTANT]
+> Run these three lines one after another in the *same* PowerShell window — they share the `$bytes` variable.
+> The first two print nothing; that is expected. Only the third line outputs the key. If you open a new window in between, `$bytes` is gone and the result is wrong.
 
    As a single line, if you would rather not deal with that:
 
@@ -116,8 +120,9 @@ All commands are written to run as shown in **PowerShell on Windows**, **Termina
    $b = New-Object byte[] 48; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
    ```
 
-   > [!IMPORTANT]
-   > Avoid `$` in any value in `.env`. Docker Compose reads it as the start of a variable reference and the value arrives truncated. Base64 output never contains `$`. Where a `$` is unavoidable, write it as `$$`.
+> [!IMPORTANT]
+> Avoid `$` in any value in `.env`. Docker Compose reads it as the start of a variable reference and the value arrives truncated.
+> Base64 output never contains `$`. Where a `$` is unavoidable, write it as `$$`.
 
 5. Build the images and start the containers:
 
