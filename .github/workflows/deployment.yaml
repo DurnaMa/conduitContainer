@@ -1,9 +1,11 @@
 name: Deployment
 
-# Runs on every push to main and can also be triggered manually from the Actions tab.
+# Builds on every push to main and to any feature branch, so a broken workflow
+# or a failing image build surfaces before the merge. Deploying to the VM is
+# restricted to main (see the "if" on the deploy job).
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   workflow_dispatch:
 
 env:
@@ -27,11 +29,8 @@ jobs:
         include:
           - service: backend
             context: ./conduit-backend
-            build-args: ""
           - service: frontend
             context: ./conduit-frontend
-            build-args: |
-              API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,6 +38,16 @@ jobs:
       - name: Compute lowercase image owner
         # GHCR requires an all-lowercase path; github.repository_owner may contain uppercase letters (e.g. "DurnaMa").
         run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Assemble build args
+        # The "secrets" context is not available inside strategy.matrix, only in
+        # steps. API_URL is therefore assembled here instead of in the matrix.
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then
+            echo "BUILD_ARGS=API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+          fi
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -59,7 +68,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          build-args: ${{ matrix.build-args }}
+          build-args: ${{ env.BUILD_ARGS }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -70,6 +79,8 @@ jobs:
     name: Deploy to VM
     needs: build
     runs-on: ubuntu-latest
+    # Feature branches build and push, but never touch the VM.
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,7 +112,7 @@ jobs:
             export BACKEND_IMAGE
             export FRONTEND_IMAGE
             docker compose pull
-            docker compose up -d
+            docker compose up -d --remove-orphans
             docker image prune -f
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
