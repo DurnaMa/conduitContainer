@@ -1,6 +1,6 @@
 # Conduit Container
 
-This repository containerizes the RealWorld "Conduit" application: an Angular frontend, a Django REST backend and a PostgreSQL database, orchestrated with Docker Compose. Adminer is included as an optional database UI.
+This repository containerizes the RealWorld "Conduit" application: an Angular frontend, a Django REST backend and a PostgreSQL database, orchestrated with Docker Compose.
 
 The application source (`conduit-frontend`, `conduit-backend`) is vendored unmodified on `main`; all container and configuration work is kept in separate commits on top of it.
 
@@ -19,13 +19,16 @@ The application source (`conduit-frontend`, `conduit-backend`) is vendored unmod
   - [Verify](#verify)
   - [Logs](#logs)
   - [Stop and Cleanup](#stop-and-cleanup)
+- [Continuous Deployment](#continuous-deployment)
+  - [Required GitHub Secrets](#required-github-secrets)
+  - [One-time VM setup](#one-time-vm-setup)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
 
 - Docker installed — check with: `docker -v`
 - Docker Compose installed — check with: `docker compose version`
-- Host ports — default to `8282`, `8283` and `8285`; change them in `.env` if they are taken.
+- Host ports — default to `8282` and `8283`; change them in `.env` if they are taken.
 - A `.env` file — created in the Quickstart below.
 
 The stack runs on any Docker host: Windows or macOS with Docker Desktop, or Linux with Docker Engine.
@@ -34,7 +37,7 @@ If you run it on a remote machine, replace `localhost` with that machine's IP ad
 
 ## Command conventions
 
-All commands are written to run as shown in **Terminal on macOS** and **bash on Linux**. Where a command has no cross-platform form, both variants are given side by side.
+All commands are written to run as shown in **Terminal on macOS** and **bash on Linux**.
 
 > [!NOTE]
 > On Linux, Docker commands need root unless your user is in the `docker` group.
@@ -61,11 +64,17 @@ All commands are written to run as shown in **Terminal on macOS** and **bash on 
    cp .env.example .env
    ```
 
-4. Edit `.env` and fill in the empty values. Generate `SECRET_KEY` with:
+4. Edit `.env` and replace every placeholder. Generate `SECRET_KEY` and the two passwords with:
 
    ```bash
-   openssl rand -base64 48
+   openssl rand -base64 48    # SECRET_KEY
+   openssl rand -base64 24    # POSTGRES_PASSWORD, DJANGO_SUPERUSER_PASSWORD
    ```
+
+   `FRONTEND_IMAGE` and `BACKEND_IMAGE` stay empty — they are only set by the deployment workflow on the VM.
+
+> [!IMPORTANT]
+> Every placeholder in `.env.example` is written in angle brackets, for example `HOST=<VM-IP>`. Compose treats those as ordinary characters and starts the stack without a single warning, so an unreplaced placeholder surfaces much later as a `400 Bad Request` or a rejected database password. Verify with `grep -n '<' .env` — no output means the file is clean.
 
 > [!IMPORTANT]
 > Avoid `$` in any value in `.env`. Docker Compose reads it as the start of a variable reference and the value arrives truncated.
@@ -86,10 +95,12 @@ All commands are written to run as shown in **Terminal on macOS** and **bash on 
 | File | Purpose |
 |---|---|
 | `README.md` | This documentation |
-| `docker-compose.yaml` | Defines the `frontend`, `backend`, `db` and `adminer` services, their ports, the `db` volume and all environment variables |
+| `docker-compose.yaml` | Defines the `frontend`, `backend` and `db` services, their ports, the `db` volume, the health check and all environment variables |
 | `.env.example` | Template listing every variable the compose file references, without secret values |
 | `.gitignore` | Keeps secrets (`.env`), build output and caches out of Git |
+| `.github/workflows/deployment.yaml` | Builds both images on a GitHub runner, pushes them to GHCR and deploys them to the VM over SSH |
 | `conduit-frontend/Dockerfile` | Multi-stage build: Angular build with Node, served by Nginx |
+| `conduit-frontend/nginx.conf` | Nginx server block with `try_files`, so deep links and page reloads are answered with `index.html` instead of a 404 |
 | `conduit-frontend/.dockerignore` | Excludes `node_modules` and build output from the frontend build context |
 | `conduit-backend/Dockerfile` | Multi-stage build: pip install stage, then a slim runtime image running Gunicorn |
 | `conduit-backend/.dockerignore` | Excludes caches and local files from the backend build context |
@@ -102,14 +113,14 @@ All commands are written to run as shown in **Terminal on macOS** and **bash on 
 | `frontend` | built from `./conduit-frontend` (Node build, `nginx:1.31.3-alpine` runtime) | `8282` | `80` |
 | `backend` | built from `./conduit-backend` (`python:3.5.10-slim-buster`, Gunicorn) | `8283` | `80` |
 | `db` | `postgres:18.4-alpine3.24` | *(none)* | `5432` |
-| `adminer` | `adminer` | Host port (default) `8285` | Host port (default) `8080` |
 
 The database deliberately has no host port. Only the backend reaches it, over the internal Docker network under the hostname `db`. All services use `restart: unless-stopped`.
+
+`db` has a `pg_isready` health check, and `backend` waits for `condition: service_healthy`. Without it the backend starts before Postgres accepts connections, crashes in `migrate` and is only recovered by the restart policy a few seconds later.
 
 > [!NOTE]
 > Since PostgreSQL 18, `PGDATA` lives in `/var/lib/postgresql` instead of `/var/lib/postgresql/data`. The `db` volume is mounted accordingly.
 > Using the older path with an 18.x image would silently leave the data unpersisted.
-
 
 ## Access
 
@@ -118,13 +129,11 @@ or `PORTS_BACKEND`, use those instead.
 
 Replace `localhost` with the host's IP address if you are not running the stack on your own machine.
 
-Adminer only listens on the VM's loopback interface. Open a tunnel first:
-
-```bash
-ssh -L 8285:127.0.0.1:8285 <user>@<VM-IP>
-```
-
-To log into Adminer, choose system **PostgreSQL**, server `db`, and use `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` from your `.env`.
+| What | URL |
+|---|---|
+| Frontend | `http://<host>:8282` |
+| API | `http://<host>:8283/api/` |
+| Django admin | `http://<host>:8283/admin/` |
 
 > [!NOTE]
 > `http://localhost:8283/` returns `Not Found`. That is expected — the backend only defines `/admin/` and `/api/`.
@@ -140,7 +149,8 @@ All configuration goes through `.env`. No values are hard-coded in the compose f
 | `HOST` | Address the stack is reached under. Used to build the API URL, `ALLOWED_HOSTS` and the CORS origin | `localhost` |
 | `PORTS_FRONTEND` | Host port the frontend is published on | `8282` |
 | `PORTS_BACKEND` | Host port the backend is published on. Also becomes the port in the API URL | `8283` |
-| `PORTS_ADMINER` | Host port Adminer is published on, bound to `127.0.0.1` only | `8285` |
+| `FRONTEND_IMAGE` | Image to run instead of building from source. Leave empty for local development | *(blank)* |
+| `BACKEND_IMAGE` | Same for the backend | *(blank)* |
 | `SECRET_KEY` | Django secret used for signing sessions and tokens | *(blank — generate your own)* |
 | `DEBUG` | Django debug mode. Leave off for anything but local debugging | `False` |
 | `POSTGRES_DB` | Database name, used by both `db` and `backend` | `conduit` |
@@ -153,6 +163,9 @@ The compose file builds them from `HOST` and the port variables, so a single
 change to `HOST` or a port stays consistent across all three.
 
 > [!IMPORTANT]
+> `API_URL` needs a scheme (`http://host:port/api`) because the browser calls that URL. `ALLOWED_HOSTS` and `CORS_ORIGIN_WHITELIST` must not have one — Django compares host names, and the CORS middleware compares the `netloc` of the `Origin` header, which is `host:port` with the scheme already stripped. An entry written as `http://host:8282` never matches, and the response silently arrives without an `Access-Control-Allow-Origin` header.
+
+> [!IMPORTANT]
 > A variable that is set but empty is not the same as a missing one. `os.environ.get('X', 'default')` returns an empty string for `X=`, not the default. An empty `SECRET_KEY` makes Django fail when it signs a session.
 
 ### Build time vs. runtime
@@ -161,10 +174,10 @@ Which variables take effect when decides whether a change needs a rebuild:
 
 | Build time — needs `--build` | Runtime — recreating the container is enough |
 |---|---|
-| `API_URL` (compiled into the Angular bundle) | `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ORIGIN_WHITELIST`, `POSTGRES_*`, `DJANGO_SUPERUSER_PASSWORD` |
+| `API_URL` (compiled into the Angular bundle), `nginx.conf` (copied into the frontend image) | `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ORIGIN_WHITELIST`, `POSTGRES_*`, `DJANGO_SUPERUSER_PASSWORD` |
 
 ```bash
-# after changing API_URL
+# after changing HOST, a port, or nginx.conf
 docker compose up -d --build
 
 # after changing any runtime variable
@@ -192,6 +205,9 @@ docker compose exec backend python manage.py createsuperuser
 > [!IMPORTANT]
 > The user model uses the email address as its login field. Log into `/admin/` with the email, not the username.
 
+> [!NOTE]
+> The health check covers the database, not the migrations. Running `createsuperuser` immediately after `up -d` can still print `Not checking migrations …` while `migrate` is still working. Wait a few seconds and confirm with `docker compose exec backend python manage.py showmigrations` — no line may show `[ ]`.
+
 ### Verify
 
 1. Resolve the compose file against `.env` and check it is valid:
@@ -203,7 +219,7 @@ docker compose exec backend python manage.py createsuperuser
    docker compose config
    ```
 
-2. Check that all four containers are running:
+2. Check that all three containers are running and `db` is healthy:
 
    ```bash
    docker compose ps
@@ -212,20 +228,33 @@ docker compose exec backend python manage.py createsuperuser
 3. Check what the backend actually received — more reliable than reading `.env`, which differs per machine:
 
    ```bash
-   docker compose exec backend printenv
+   docker compose exec backend printenv | grep -E 'ALLOWED_HOSTS|CORS'
    ```
 
-4. Call the API directly:
+4. Call the API and check the CORS header:
 
    ```bash
-   curl -i http://localhost:8283/api/tags
+   IP=$(grep '^HOST=' .env | cut -d= -f2)
+   curl -i -H "Host: $IP" -H "Origin: http://$IP:8282" \
+        http://localhost:8283/api/tags | grep -iE 'HTTP/|server|access-control'
    ```
 
-   Expect status `200` and a `Server: gunicorn` response header. The header confirms a WSGI server is serving the app rather than a development server.
+   Expect status `200`, a `Server: gunicorn` header and `Access-Control-Allow-Origin: http://<host>:8282`. The first confirms a WSGI server is serving the app rather than a development server, the second that the browser will accept the response.
 
-5. Open the frontend and navigate through it. In the browser's network tab, the requests must go to `http://localhost:8283/api/...`, not to `api.realworld.io`.
+   > [!NOTE]
+   > On a cloud VM, calling its own public IP can time out even though everything works — the public address is mapped in front of the instance rather than bound to its interface, so the packet never comes back. That is why the command above connects to `localhost` and sets `Host` and `Origin` by hand: `Host` is what Django checks against `ALLOWED_HOSTS`, `Origin` is what the CORS middleware checks. From your own machine the public address works normally.
 
-6. Confirm data persistence: create something in the admin, then run `docker compose down` followed by `docker compose up -d`. The record must still be there.
+5. Check that deep links are served by the SPA, not by Nginx's file lookup:
+
+   ```bash
+   curl -o /dev/null -w "%{http_code}\n" http://localhost:8282/login
+   ```
+
+   Expect `200`. A `404` means `nginx.conf` did not make it into the image.
+
+6. Open the frontend and navigate through it. In the browser's network tab, the requests must go to `http://<host>:8283/api/...`, not to `api.realworld.io`.
+
+7. Confirm data persistence: create something in the admin, then run `docker compose down` followed by `docker compose up -d`. The record must still be there.
 
 ### Logs
 
@@ -260,15 +289,54 @@ docker logs conduit-backend-1 > container-logs.txt
    docker compose down -v
    ```
 
+## Continuous Deployment
+
+Every push to `main` (or a manual run from the Actions tab) triggers `.github/workflows/deployment.yaml`, which does two things:
+
+1. **`build`** — builds the `frontend` and `backend` images (one matrix job each) and pushes them to the GitHub Container Registry (GHCR) as `ghcr.io/<owner>/conduitcontainer-backend` and `ghcr.io/<owner>/conduitcontainer-frontend`. The build happens entirely on the GitHub-hosted runner — **not** on the VM.
+2. **`deploy`** — opens an SSH connection to the VM, copies the current `docker-compose.yaml` there, then runs `docker compose pull` followed by `docker compose up -d` (detached mode). Any failing step aborts the workflow with an error.
+
+### Required GitHub Secrets
+
+Set these under **Settings → Secrets and variables → Actions** in the GitHub repository. None of them are stored in the code.
+
+| Secret | Purpose |
+|---|---|
+| `SSH_HOST` | IP address or hostname of the deployment VM |
+| `SSH_USER` | SSH user on the VM |
+| `SSH_PRIVATE_KEY` | Private key matching a public key already in `~/.ssh/authorized_keys` on the VM |
+| `HOST` | Same value as `HOST` in the VM's `.env` — used to compile the correct `API_URL` into the frontend image at build time |
+| `PORTS_BACKEND` | Optional. Same value as `PORTS_BACKEND` in the VM's `.env`; defaults to `8283` if not set |
+
+`GITHUB_TOKEN` is provided automatically by GitHub Actions and needs no setup — it authenticates both the push to GHCR and the `docker login` on the VM.
+
+### One-time VM setup
+
+The workflow only ever copies `docker-compose.yaml` — everything else must exist on the VM once, beforehand:
+
+1. Docker and the Compose plugin are installed, and the SSH user can run `docker` (is in the `docker` group).
+2. The deploy directory exists and matches `DEPLOY_PATH` at the top of `deployment.yaml` (default: `/opt/conduit`):
+   ```bash
+   sudo mkdir -p /opt/conduit
+   sudo chown $USER:$USER /opt/conduit
+   ```
+3. A `.env` file (see [Quickstart](#quickstart)) is placed at `/opt/conduit/.env` — this is done manually, once, and is never touched by the workflow, so secrets never pass through CI logs.
+
+From then on, every push to `main` rebuilds the images and restarts the stack on the VM automatically.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `Bad Request (400)` from Django | The host you are using is not in `ALLOWED_HOSTS`. Django compares the hostname without the port. |
+| `Bad Request (400)` on every URL, including `/admin/` | The host you are using is not in `ALLOWED_HOSTS`. Django checks this before routing, so every path is affected. It compares the host name without the port. |
+| `Bad Request (400)` right after setup, or a database password that is rejected | Placeholders from `.env.example` are still in `.env`. Compose accepts `<VM-IP>` as a literal value without warning. Check with `grep -n '<' .env`, then with `docker compose exec backend printenv`. |
+| Request to the API times out instead of failing fast | Either the port is closed in the firewall or security group, or you are calling the VM's public IP from the VM itself (see the note under [Verify](#verify)). `Connection refused` would mean the opposite: no listener, so the container is down. |
 | `Welcome to nginx!` instead of the app | `index.html` is not directly in `/usr/share/nginx/html`. Check the `COPY` path in the frontend Dockerfile against the output directory in `angular.json`. |
+| `404` when reloading a subpage, while clicking through the app works | `nginx.conf` is not in the image. Angular routes client-side; on a reload Nginx looks for a real file called `/login`. Check the `COPY nginx.conf` line in the frontend Dockerfile. |
 | `Not Found` at `http://<host>:8283/` | Expected. The backend only serves `/admin/` and `/api/`. |
-| Frontend loads but shows no data | `API_URL` was wrong when the image was built, or the origin is missing from `CORS_ORIGIN_WHITELIST`. `API_URL` requires `up -d --build`. |
+| Frontend loads but shows no data | `API_URL` was wrong when the image was built, or the origin does not match `CORS_ORIGIN_WHITELIST` — remember that entry takes no scheme. `API_URL` requires `up -d --build`. |
 | `password authentication failed for user` | Postgres applies `POSTGRES_USER` and `POSTGRES_PASSWORD` only on the very first start into an empty volume. Later changes have no effect. To apply them, run `docker compose down -v` — this deletes all data. |
-| `Connection refused` for host `db` on first start | Postgres is not ready yet. `depends_on` waits for the container to start, not for the database to accept connections. `restart: unless-stopped` recovers from it; a healthcheck on `db` would avoid it entirely. |
+| `Connection refused` for host `db` on first start | Postgres is not ready yet. The `pg_isready` health check on `db` plus `condition: service_healthy` on `backend` prevents this; without them `depends_on` only waits for the container to start. |
+| An `adminer` container keeps reappearing | Left over from an earlier version of the compose file. Remove it with `docker compose down --remove-orphans`. |
 | `docker logs` shows nothing for the backend | Python is buffering. `PYTHONUNBUFFERED=1` must be set in the backend image. |
 | `permission denied` on the Docker socket (Linux) | Your user is not in the `docker` group. Use `sudo`, or add yourself to the group — see [Command conventions](#command-conventions). |

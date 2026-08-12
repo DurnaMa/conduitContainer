@@ -1,0 +1,111 @@
+name: Deployment
+
+# Runs on every push to main and can also be triggered manually from the Actions tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # Directory on the VM that already contains a (manually created) .env file.
+  # docker-compose.yaml is copied here by the deploy job on every run.
+  DEPLOY_PATH: /opt/conduit
+
+jobs:
+  # Job 1: build the two images and push them to GHCR, following GitHub's own
+  # "Publish Docker Container" starter workflow — extended with a matrix so it
+  # covers both the frontend and the backend image. Nothing is built on the VM.
+  build:
+    name: Build and push image (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # required to push images to GitHub Container Registry (GHCR)
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            context: ./conduit-backend
+            build-args: ""
+          - service: frontend
+            context: ./conduit-frontend
+            build-args: |
+              API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute lowercase image owner
+        # GHCR requires an all-lowercase path; github.repository_owner may contain uppercase letters (e.g. "DurnaMa").
+        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduitcontainer-${{ matrix.service }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          build-args: ${{ matrix.build-args }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Job 2: connect to the VM via SSH and start the already-built images.
+  # This is the part the checklist asks for that the plain "Publish Docker
+  # Container" template does not cover on its own.
+  deploy:
+    name: Deploy to VM
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute lowercase image owner
+        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Copy docker-compose.yaml to the VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: docker-compose.yaml
+          target: ${{ env.DEPLOY_PATH }}
+
+      - name: Open SSH connection and (re)start the stack
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # "set -e" makes the script (and therefore the whole workflow) fail on the first command that errors.
+          envs: GHCR_TOKEN,GHCR_ACTOR,BACKEND_IMAGE,FRONTEND_IMAGE,DEPLOY_PATH
+          script: |
+            set -e
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin
+            cd "$DEPLOY_PATH"
+            export BACKEND_IMAGE
+            export FRONTEND_IMAGE
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+          BACKEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-backend:latest
+          FRONTEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-frontend:latest
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
