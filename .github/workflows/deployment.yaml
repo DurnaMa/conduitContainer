@@ -1,11 +1,15 @@
 name: Deployment
 
-# Builds on every push to main and to any feature branch, so a broken workflow
-# or a failing image build surfaces before the merge. Deploying to the VM is
-# restricted to main (see the "if" on the deploy job).
+# Pull requests against main build both images without pushing them, so a broken
+# workflow or a failing build surfaces before the merge. A push to main builds,
+# pushes and deploys. A v*.*.* tag builds and pushes a versioned image without
+# touching the VM.
 on:
   push:
-    branches: [main, 'feature/**']
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -50,6 +54,7 @@ jobs:
           fi
 
       - name: Log in to the Container registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -61,13 +66,17 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduitcontainer-${{ matrix.service }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
         id: push
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           build-args: ${{ env.BUILD_ARGS }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -79,7 +88,8 @@ jobs:
     name: Deploy to VM
     needs: build
     runs-on: ubuntu-latest
-    # Feature branches build and push, but never touch the VM.
+    # Only a push to main reaches the VM. Pull requests and version tags stop
+    # after the build.
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository
@@ -87,6 +97,10 @@ jobs:
 
       - name: Compute lowercase image owner
         run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Resolve image tag
+        # Same short SHA that docker/metadata-action used when the image was pushed.
+        run: echo "IMAGE_TAG=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_ENV"
 
       - name: Copy docker-compose.yaml to the VM
         uses: appleboy/scp-action@v0.1.7
@@ -117,6 +131,6 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_ACTOR: ${{ github.actor }}
-          BACKEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-backend:latest
-          FRONTEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-frontend:latest
+          BACKEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-backend:${{ env.IMAGE_TAG }}
+          FRONTEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-frontend:${{ env.IMAGE_TAG }}
           DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
