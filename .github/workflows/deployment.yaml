@@ -116,12 +116,17 @@ jobs:
 
       - name: Check backend responds
         run: |
-          code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8283/api/tags)
-          echo "Backend returned $code"
-          if [ "$code" != "200" ]; then
-            docker compose logs backend
-            exit 1
-          fi
+          for i in $(seq 1 15); do
+            code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8283/api/tags || true)
+            echo "Attempt $i: backend returned $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "backend did not respond with 200"
+          docker compose logs backend
+          exit 1
 
       - name: Tear down
         if: always()
