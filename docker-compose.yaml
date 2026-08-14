@@ -27,6 +27,8 @@ services:
       ALLOWED_HOSTS: ${HOST}
       CORS_ORIGIN_WHITELIST: ${HOST}:${PORTS_FRONTEND:-8282}
       DEBUG: ${DEBUG}
+    env_file:
+      - .env
     depends_on:
       db:
         condition: service_healthy

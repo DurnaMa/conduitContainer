@@ -1,108 +1,153 @@
 name: Deployment
 
-# Pull requests against main build both images without pushing them, so a broken
-# workflow or a failing build surfaces before the merge. A push to main builds,
-# pushes and deploys. A v*.*.* tag builds and pushes a versioned image without
-# touching the VM.
 on:
   push:
     branches: [main]
     tags: ['v*.*.*']
+  workflow_dispatch:
   pull_request:
     branches: [main]
-  workflow_dispatch:
+  
 
 env:
   REGISTRY: ghcr.io
-  # Directory on the VM that already contains a (manually created) .env file.
-  # docker-compose.yaml is copied here by the deploy job on every run.
   DEPLOY_PATH: /opt/conduit
 
+# Job 1: build the two images and push them to GHCR, following GitHub's own
+# "Publish Docker Container" starter workflow — extended with a matrix so it
+# covers both the frontend and the backend image. Nothing is built on the VM.
 jobs:
-  # Job 1: build the two images and push them to GHCR, following GitHub's own
-  # "Publish Docker Container" starter workflow — extended with a matrix so it
-  # covers both the frontend and the backend image. Nothing is built on the VM.
   build:
-    name: Build and push image (${{ matrix.service }})
+    name: Build and push image (${{ matrix.service}})
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # required to push images to GitHub Container Registry (GHCR)
+      packages: write
     strategy:
       matrix:
-        include:
-          - service: backend
-            context: ./conduit-backend
-          - service: frontend
-            context: ./conduit-frontend
+        service: [backend, frontend]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Compute lowercase image owner
-        # GHCR requires an all-lowercase path; github.repository_owner may contain uppercase letters (e.g. "DurnaMa").
         run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
-      - name: Assemble build args
-        # The "secrets" context is not available inside strategy.matrix, only in
-        # steps. API_URL is therefore assembled here instead of in the matrix.
-        run: |
-          if [ "${{ matrix.service }}" = "frontend" ]; then
-            echo "BUILD_ARGS=API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api" >> "$GITHUB_ENV"
-          else
-            echo "BUILD_ARGS=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Log in to the Container registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Compute tags and labels
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduitcontainer-${{ matrix.service }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-${{ matrix.service }}
           tags: |
-            type=semver,pattern={{version}}
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
 
-      - name: Build and push Docker image
-        id: push
-        uses: docker/build-push-action@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image references
+        uses: docker/build-push-action@v5
         with:
-          context: ${{ matrix.context }}
-          push: ${{ github.event_name != 'pull_request' }}
-          build-args: ${{ env.BUILD_ARGS }}
+          context: ./conduit-${{ matrix.service }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Job 2: connect to the VM via SSH and start the already-built images.
-  # This is the part the checklist asks for that the plain "Publish Docker
-  # Container" template does not cover on its own.
-  deploy:
-    name: Deploy to VM
-    needs: build
+  # Job 2: pull the images from GHCR and check the stack starts healthy
+  test:
+    name: Test the stack
     runs-on: ubuntu-latest
-    # Only a push to main reaches the VM. Pull requests and version tags stop
-    # after the build.
-    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+    needs: build
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute lowercase image owner
         run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: Resolve image tag
-        # Same short SHA that docker/metadata-action used when the image was pushed.
         run: echo "IMAGE_TAG=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_ENV"
 
-      - name: Copy docker-compose.yaml to the VM
+      - name: Create dummy .env for the test
+        run: |
+          cat > .env <<'EOF'
+          HOST=localhost
+          POSTGRES_DB=conduit
+          POSTGRES_USER=conduit
+          POSTGRES_PASSWORD=testpassword
+          SECRET_KEY=dummy-secret-for-ci-only
+          DEBUG=False
+          DJANGO_SUPERUSER_PASSWORD=testpassword
+          EOF
+
+      - name: Start the stack
+        run: |
+          export FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-frontend:${{ env.IMAGE_TAG }}
+          export BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-backend:${{ env.IMAGE_TAG }}
+          docker compose up -d
+
+      - name: Wait for db to be healthy
+        run: |
+          for i in $(seq 1 12); do
+            if docker compose ps db | grep -q "healthy"; then
+              echo "db is healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "db did not become healthy"
+          docker compose logs
+          exit 1
+
+      - name: Check backend responds
+        run: |
+          code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8283/api/tags)
+          echo "Backend returned $code"
+          if [ "$code" != "200" ]; then
+            docker compose logs backend
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  deploy:
+    name: Deploy to VM
+    needs: test
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Compute lowercase image owner
+        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Resolve image tag
+        run: echo "IMAGE_TAG=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_ENV"
+
+      - name: Build image references
+        run: |
+          echo "FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-frontend:${{ env.IMAGE_TAG }}" >> "$GITHUB_ENV"
+          echo "BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-backend:${{ env.IMAGE_TAG }}" >> "$GITHUB_ENV"
+
+      - name: Copy docker-compose.yaml to the VM        # ← HIER rein
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -111,26 +156,14 @@ jobs:
           source: docker-compose.yaml
           target: ${{ env.DEPLOY_PATH }}
 
-      - name: Open SSH connection and (re)start the stack
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # "set -e" makes the script (and therefore the whole workflow) fail on the first command that errors.
-          envs: GHCR_TOKEN,GHCR_ACTOR,BACKEND_IMAGE,FRONTEND_IMAGE,DEPLOY_PATH
+          envs: FRONTEND_IMAGE,BACKEND_IMAGE
           script: |
-            set -e
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin
-            cd "$DEPLOY_PATH"
-            export BACKEND_IMAGE
-            export FRONTEND_IMAGE
+            cd ${{ env.DEPLOY_PATH }}
             docker compose pull
             docker compose up -d --remove-orphans
-            docker image prune -f
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_ACTOR: ${{ github.actor }}
-          BACKEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-backend:${{ env.IMAGE_TAG }}
-          FRONTEND_IMAGE: ghcr.io/${{ env.IMAGE_OWNER }}/conduitcontainer-frontend:${{ env.IMAGE_TAG }}
-          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
