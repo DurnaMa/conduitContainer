@@ -17,6 +17,7 @@ env:
 # "Publish Docker Container" starter workflow — extended with a matrix so it
 # covers both the frontend and the backend image. Nothing is built on the VM.
 jobs:
+  
   build:
     name: Build and push image (${{ matrix.service}})
     runs-on: ubuntu-latest
@@ -53,13 +54,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image references
+      - name: Assemble build args
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then
+            echo "BUILD_ARGS=API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: ./conduit-${{ matrix.service }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ env.BUILD_ARGS }}
 
   # Job 2: pull the images from GHCR and check the stack starts healthy
   test:

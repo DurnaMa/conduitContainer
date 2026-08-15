@@ -20,6 +20,8 @@ The application source (`conduit-frontend`, `conduit-backend`) is vendored unmod
   - [Logs](#logs)
   - [Stop and Cleanup](#stop-and-cleanup)
 - [Continuous Deployment](#continuous-deployment)
+  - [Local build](#local-build)
+  - [Automated deployment](#automated-deployment)
   - [Required GitHub Secrets](#required-github-secrets)
   - [One-time VM setup](#one-time-vm-setup)
 - [Troubleshooting](#troubleshooting)
@@ -291,36 +293,68 @@ docker logs conduit-backend-1 > container-logs.txt
 
 ## Continuous Deployment
 
-Every push to `main` (or a manual run from the Actions tab) triggers `.github/workflows/deployment.yaml`, which does two things:
+This repository supports two independent ways to run the stack. You choose one by how you fill in `.env` — the `docker-compose.yaml` is the same for both, because every service declares both an `image:` and a `build:`. When the image variable is empty, Compose builds from source; when it is set, Compose pulls the finished image and ignores `build:`.
 
-1. **`build`** — builds the `frontend` and `backend` images (one matrix job each) and pushes them to the GitHub Container Registry (GHCR) as `ghcr.io/<owner>/conduitcontainer-backend` and `ghcr.io/<owner>/conduitcontainer-frontend`. The build happens entirely on the GitHub-hosted runner — **not** on the VM.
-2. **`deploy`** — opens an SSH connection to the VM, copies the current `docker-compose.yaml` there, then runs `docker compose pull` followed by `docker compose up -d` (detached mode). Any failing step aborts the workflow with an error.
+| | Local build | Automated deployment (CI/CD) |
+|---|---|---|
+| For | Running or developing the app on any Docker host | Shipping to a remote VM automatically on every push to `main` |
+| Images | Built on your machine from source | Built on a GitHub runner, pushed to GHCR, pulled by the VM |
+| You configure | `.env` only | `.env` on the VM **and** GitHub Secrets in your repo |
+| `API_URL` (frontend → backend) | baked in at build time from `.env` | baked in at build time from the `HOST` **secret** |
+| Command | `docker compose up -d --build` | `git push` to `main` (or a manual run) |
 
-### Required GitHub Secrets
+> [!NOTE]
+> Cloning this repository does **not** copy any GitHub Secrets — they belong to the original repo. To only run the app locally you need none of them; `.env` is enough. You only need the secrets below if you set up the automated deployment in **your own** fork.
 
-Set these under **Settings → Secrets and variables → Actions** in the GitHub repository. None of them are stored in the code.
+### Local build
+
+Follow the [Quickstart](#quickstart). Leave `FRONTEND_IMAGE` and `BACKEND_IMAGE` empty in `.env`; Compose then falls back to the `:local` defaults and builds from source. No GitHub Secrets and no VM are required.
+
+### Automated deployment
+
+Pushing to `main`, pushing a `v*.*.*` tag, or a manual run (`workflow_dispatch`) triggers `.github/workflows/deployment.yaml`, which runs three jobs in sequence:
+
+1. **`build`** — builds the `frontend` and `backend` images (one matrix job each) and pushes them to the GitHub Container Registry as `ghcr.io/<owner>/conduit-frontend` and `ghcr.io/<owner>/conduit-backend`. Each image is tagged with the short commit SHA (`sha-<short>`), plus `latest` on `main` and the version on a `v*.*.*` tag. The build runs entirely on the GitHub runner — **not** on the VM.
+2. **`test`** — pulls the freshly built images, starts the full stack with a throwaway `.env`, waits for `db` to become healthy and checks that the backend answers `200`. A failure here stops the pipeline before anything reaches the VM.
+3. **`deploy`** — copies the current `docker-compose.yaml` to the VM over SSH, then runs `docker compose pull` and `docker compose up -d --remove-orphans` (detached mode). It runs only on `main` or a manual dispatch, never on a pull request. Any failing step aborts the workflow with an error.
+
+#### Required GitHub Secrets
+
+Set these under **Settings → Secrets and variables → Actions** in your repository. None are stored in the code, and none are needed for a local build.
 
 | Secret | Purpose |
 |---|---|
 | `SSH_HOST` | IP address or hostname of the deployment VM |
 | `SSH_USER` | SSH user on the VM |
-| `SSH_PRIVATE_KEY` | Private key matching a public key already in `~/.ssh/authorized_keys` on the VM |
-| `HOST` | Same value as `HOST` in the VM's `.env` — used to compile the correct `API_URL` into the frontend image at build time |
-| `PORTS_BACKEND` | Optional. Same value as `PORTS_BACKEND` in the VM's `.env`; defaults to `8283` if not set |
+| `SSH_PRIVATE_KEY` | Private key whose public half is in `~/.ssh/authorized_keys` on the VM |
+| `HOST` | IP or hostname of the VM. Used at **build time** to compile `API_URL` into the frontend image, so the browser talks to the right backend |
 
-`GITHUB_TOKEN` is provided automatically by GitHub Actions and needs no setup — it authenticates both the push to GHCR and the `docker login` on the VM.
+`PORTS_BACKEND` is optional — set it only if the backend runs on a non-default host port; it defaults to `8283`.
 
-### One-time VM setup
+> [!IMPORTANT]
+> `HOST` appears in two unrelated places and both must match:
+> - as a **GitHub Secret** — baked into the frontend image at build time (`API_URL`);
+> - in the VM's **`.env`** — read at runtime for `ALLOWED_HOSTS` and the CORS origin.
+>
+> If they disagree, the stack starts but the frontend loads no data.
 
-The workflow only ever copies `docker-compose.yaml` — everything else must exist on the VM once, beforehand:
+`GITHUB_TOKEN` is provided automatically by GitHub Actions and needs no setup — it authenticates the push to GHCR. Its `packages: write` permission is declared in the workflow.
 
-1. Docker and the Compose plugin are installed, and the SSH user can run `docker` (is in the `docker` group).
-2. The deploy directory exists and matches `DEPLOY_PATH` at the top of `deployment.yaml` (default: `/opt/conduit`):
+#### One-time VM setup
+
+The workflow only ever copies `docker-compose.yaml`; everything else must exist on the VM beforehand:
+
+1. Docker and the Compose plugin are installed, and the SSH user is in the `docker` group.
+2. The deploy directory exists and matches `DEPLOY_PATH` in `deployment.yaml` (default `/opt/conduit`):
    ```bash
    sudo mkdir -p /opt/conduit
    sudo chown $USER:$USER /opt/conduit
    ```
-3. A `.env` file (see [Quickstart](#quickstart)) is placed at `/opt/conduit/.env` — this is done manually, once, and is never touched by the workflow, so secrets never pass through CI logs.
+3. A real `.env` is placed at `/opt/conduit/.env` — done manually, once, never touched by the workflow, so secrets never pass through CI logs. Verify with `grep -n '<' /opt/conduit/.env` (no output means it is clean).
+4. The public half of `SSH_PRIVATE_KEY` is in `~/.ssh/authorized_keys`. Test from your own machine, not from the VM (a VM connecting to itself proves nothing about GitHub's access):
+   ```bash
+   ssh -i ~/.ssh/<your_key> <SSH_USER>@<VM-IP> "echo ok"
+   ```
 
 From then on, every push to `main` rebuilds the images and restarts the stack on the VM automatically.
 
