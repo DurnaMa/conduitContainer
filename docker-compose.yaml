@@ -2,19 +2,21 @@ name: conduit
 
 services:
   frontend:
+    image: ${FRONTEND_IMAGE:-conduit-frontend:local}
     build:
       context: ./conduit-frontend
       args:
         - API_URL=http://${HOST}:${PORTS_BACKEND:-8283}/api
     restart: unless-stopped
-    ports: 
+    ports:
       - ${PORTS_FRONTEND:-8282}:80
 
   backend:
+    image: ${BACKEND_IMAGE:-conduit-backend:local}
     build:
       context: ./conduit-backend
     restart: unless-stopped
-    ports: 
+    ports:
       - ${PORTS_BACKEND:-8283}:80
     environment:
       DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD}
@@ -23,10 +25,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       ALLOWED_HOSTS: ${HOST}
-      CORS_ORIGIN_WHITELIST: http://${HOST}:${PORTS_FRONTEND:-8282}
+      CORS_ORIGIN_WHITELIST: ${HOST}:${PORTS_FRONTEND:-8282}
       DEBUG: ${DEBUG}
+    env_file:
+      - .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   db:
     image: postgres:18.4-alpine3.24
@@ -36,14 +41,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - db:/var/lib/postgresql
-
-  adminer:
-    image: adminer
-    restart: unless-stopped
-    ports: 
-      - "http://127.0.0.1:${PORTS_ADMINER:-8285}:8080"
 
 volumes:
   db:
