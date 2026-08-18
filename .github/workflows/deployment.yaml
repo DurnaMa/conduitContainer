@@ -1,152 +1,22 @@
 name: Deployment
 
+# CD: runs after the CI workflow finishes. It only proceeds if CI succeeded
+# (see the if: below) and only on main, or when triggered by hand.
 on:
-  push:
-    branches: [main]
-    tags: ['v*.*.*']
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-  
 
 env:
   REGISTRY: ghcr.io
   DEPLOY_PATH: /opt/conduit
 
-# Job 1: build the two images and push them to GHCR, following GitHub's own
-# "Publish Docker Container" starter workflow — extended with a matrix so it
-# covers both the frontend and the backend image. Nothing is built on the VM.
 jobs:
-  
-  build:
-    name: Build and push image (${{ matrix.service}})
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        service: [backend, frontend]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Compute lowercase image owner
-        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute tags and labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-${{ matrix.service }}
-          tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Assemble build args
-        run: |
-          if [ "${{ matrix.service }}" = "frontend" ]; then
-            echo "BUILD_ARGS=API_URL=http://${{ secrets.HOST }}:${{ secrets.PORTS_BACKEND || '8283' }}/api" >> "$GITHUB_ENV"
-          else
-            echo "BUILD_ARGS=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./conduit-${{ matrix.service }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ env.BUILD_ARGS }}
-
-  # Job 2: pull the images from GHCR and check the stack starts healthy
-  test:
-    name: Test the stack
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute lowercase image owner
-        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-
-      - name: Resolve image tag
-        run: echo "IMAGE_TAG=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_ENV"
-
-      - name: Create dummy .env for the test
-        run: |
-          cat > .env <<'EOF'
-          HOST=localhost
-          POSTGRES_DB=conduit
-          POSTGRES_USER=conduit
-          POSTGRES_PASSWORD=testpassword
-          SECRET_KEY=dummy-secret-for-ci-only
-          DEBUG=False
-          DJANGO_SUPERUSER_PASSWORD=testpassword
-          EOF
-
-      - name: Start the stack
-        run: |
-          export FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-frontend:${{ env.IMAGE_TAG }}
-          export BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-backend:${{ env.IMAGE_TAG }}
-          docker compose up -d
-
-      - name: Wait for db to be healthy
-        run: |
-          for i in $(seq 1 12); do
-            if docker compose ps db | grep -q "healthy"; then
-              echo "db is healthy"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "db did not become healthy"
-          docker compose logs
-          exit 1
-
-      - name: Check backend responds
-        run: |
-          for i in $(seq 1 15); do
-            code=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8283/api/tags || true)
-            echo "Attempt $i: backend returned $code"
-            if [ "$code" = "200" ]; then
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "backend did not respond with 200"
-          docker compose logs backend
-          exit 1
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v
-
   deploy:
     name: Deploy to VM
-    needs: test
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -162,7 +32,7 @@ jobs:
           echo "FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-frontend:${{ env.IMAGE_TAG }}" >> "$GITHUB_ENV"
           echo "BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-backend:${{ env.IMAGE_TAG }}" >> "$GITHUB_ENV"
 
-      - name: Copy docker-compose.yaml to the VM        # ← HIER rein
+      - name: Copy docker-compose.yaml to the VM
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
