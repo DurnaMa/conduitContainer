@@ -1,0 +1,46 @@
+name: Test
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ lower(github.event.workflow_run.repository.owner.login) }}
+  IMAGE_TAG: sha-${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  test:
+    name: Test the stack
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    permissions:
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stack starten
+        run: |
+          echo "FRONTEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-frontend:${{ env.IMAGE_TAG }}" >> $GITHUB_ENV
+          echo "BACKEND_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/conduit-backend:${{ env.IMAGE_TAG }}" >> $GITHUB_ENV
+          cat > .env <<EOF
+          POSTGRES_DB=conduit
+          POSTGRES_USER=conduit
+          POSTGRES_PASSWORD=test
+          SECRET_KEY=test-secret
+          DEBUG=False
+          EOF
+          docker compose up -d
+
+      - name: Warten auf Backend
+        run: |
+          for i in {1..15}; do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8283/api/tags)" = "200" ] && exit 0
+            sleep 4
+          done
+          docker compose logs
+          exit 1
+
+      - if: always()
+        run: docker compose down -v
