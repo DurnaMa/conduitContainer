@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
   pull_request:
     branches: [main]
 
@@ -13,9 +12,6 @@ env:
   IMAGE_TAG: sha-${{ github.sha }}
 
 jobs:
-  # ─────────────────────────────────────────────
-  # 1) Images bauen & pushen
-  # ─────────────────────────────────────────────
   build:
     name: Build & push images
     runs-on: ubuntu-latest
@@ -39,7 +35,6 @@ jobs:
           tags: |
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
       - uses: docker/build-push-action@v5
         with:
           context: ./conduit-${{ matrix.service }}
@@ -48,23 +43,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ matrix.service == 'frontend' && format('API_URL=http://{0}:8283/api', secrets.HOST) || '' }}
 
-  # ─────────────────────────────────────────────
-  # 2) Deployment – läuft NACH dem Test-Workflow
-  # ─────────────────────────────────────────────
   deploy:
     name: Deploy to VM
     needs: build
-    runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Warten bis Test-Workflow fertig ist
-        uses: lewagon/wait-action-check@v1
-        with:
-          ref: ${{ github.ref }}
-          check-name: "Test"
-          wait-timeout: 600
-
       - uses: actions/checkout@v4
       - name: Deploy
         uses: appleboy/ssh-action@v1
